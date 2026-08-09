@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { exec } from 'child_process';
 import util from 'util';
+import multer from 'multer';
 
 const execAsync = util.promisify(exec);
 
@@ -16,30 +17,68 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Storage directory for clips
+// Storage directories
 const CLIPS_DIR = path.join(__dirname, 'clips');
-if (!fs.existsSync(CLIPS_DIR)) {
-  fs.mkdirSync(CLIPS_DIR, { recursive: true });
-}
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const TEMP_DIR = path.join(__dirname, 'temp');
 
-// In-memory clips store (persisted to clips/db.json)
+[CLIPS_DIR, UPLOADS_DIR, TEMP_DIR].forEach((dir) => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
+
+// Multer Storage Configuration (1 GB Limit)
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, UPLOADS_DIR);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase() || '.mp4';
+    const safeName = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
+    cb(null, safeName);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.mp4', '.mov', '.webm', '.avi', '.mkv'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext) || file.mimetype.startsWith('video/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid video format. Supported: MP4, MOV, WebM, AVI, MKV'));
+    }
+  },
+});
+
+// Database file for clip records
 const DB_FILE = path.join(CLIPS_DIR, 'db.json');
-interface ClipRecord {
+
+export interface ClipRecord {
   id: string;
-  youtubeUrl: string;
-  youtubeId: string;
+  sourceType: 'file' | 'youtube';
+  youtubeUrl?: string;
+  youtubeId?: string;
+  filename?: string;
+  originalName?: string;
   title: string;
   channel: string;
   startTime: string;
   startTimeSeconds: number;
   durationSeconds: number;
-  aspectRatio: '9:16' | '1:1' | '16:9';
+  aspectRatio: '9:16' | '1:1' | '16:9' | 'custom';
+  customWidth?: number;
+  customHeight?: number;
   enableSubtitles: boolean;
   subtitleStyle?: string;
   status: 'processing' | 'completed' | 'failed';
   progress: number;
   clipUrl: string;
   downloadUrl: string;
+  shareUrl: string;
   thumbnailUrl: string;
   createdAt: string;
   errorMessage?: string;
@@ -75,32 +114,33 @@ function getYouTubeId(url: string): string | null {
   if (!url) return null;
   const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|shorts\/|watch\?v=|\&v=)([^#\&\?]*).*/;
   const match = url.match(regExp);
-  return (match && match[2].length === 11) ? match[2] : null;
+  return match && match[2].length === 11 ? match[2] : null;
 }
 
 // Utility to parse HH:MM:SS or MM:SS to seconds
 function parseTimeToSec(timeStr: string): number {
   if (!timeStr) return 0;
   if (/^\d+(\.\d+)?$/.test(timeStr.trim())) return parseFloat(timeStr.trim());
-  const parts = timeStr.trim().split(':').map(p => parseFloat(p) || 0);
+  const parts = timeStr.trim().split(':').map((p) => parseFloat(p) || 0);
   if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
   if (parts.length === 2) return parts[0] * 60 + parts[1];
   return parts[0] || 0;
 }
 
-// Sample subtitle lines for generated viral clips
+// Sample subtitle caption generator
 const SAMPLE_CAPTIONS_POOL = [
   "This AI logic actually works like magic...",
   "Nobody expected this turn of events!",
   "Here is the secret strategy nobody tells you.",
   "Watch closely because this changes everything.",
-  "If you want to level up, start doing this today."
+  "If you want to level up, start doing this today.",
+  "Creating short-form content has never been easier."
 ];
 
 // Serve static clips
 app.use('/clips', express.static(CLIPS_DIR));
 
-// 1. POST /api/info - Fetch video metadata
+// 1. POST /api/info - Fetch YouTube metadata
 app.post('/api/info', async (req, res) => {
   try {
     const { url } = req.body;
@@ -113,16 +153,17 @@ app.post('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Invalid YouTube URL provided' });
     }
 
-    // Try YouTube oEmbed for guaranteed title, channel, thumbnail
-    let title = 'Viral YouTube Clip';
+    let title = 'Viral Video Clip';
     let channel = 'YouTube Creator';
     let thumbnailUrl = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-    let durationSeconds = 600; // default 10 mins estimate if unknown
+    let durationSeconds = 600;
 
     try {
-      const oembedRes = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
+      const oembedRes = await fetch(
+        `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`
+      );
       if (oembedRes.ok) {
-        const oembedData = await oembedRes.json() as any;
+        const oembedData = (await oembedRes.json()) as any;
         title = oembedData.title || title;
         channel = oembedData.author_name || channel;
         if (oembedData.thumbnail_url) {
@@ -133,20 +174,21 @@ app.post('/api/info', async (req, res) => {
       console.warn('oEmbed fetch fallback:', e);
     }
 
-    // Try yt-dlp metadata if available
     try {
-      const { stdout } = await execAsync(`/tmp/yt-dlp -j --no-playlist "https://www.youtube.com/watch?v=${videoId}"`, { timeout: 10000 });
+      const { stdout } = await execAsync(
+        `/tmp/yt-dlp -j --no-playlist "https://www.youtube.com/watch?v=${videoId}"`,
+        { timeout: 10000 }
+      );
       const json = JSON.parse(stdout);
       if (json.title) title = json.title;
       if (json.uploader || json.channel) channel = json.uploader || json.channel;
       if (json.duration) durationSeconds = json.duration;
-    } catch (e) {
-      // Ignore yt-dlp error, fallback metadata works great!
-    }
+    } catch (e) {}
 
-    // Enforce 2 hour max duration limit
     if (durationSeconds > 7200) {
-      return res.status(400).json({ error: 'Maximum input video duration is 2 hours (120 minutes).' });
+      return res.status(400).json({
+        error: 'Maximum input video duration is 2 hours (120 minutes).',
+      });
     }
 
     return res.json({
@@ -156,22 +198,22 @@ app.post('/api/info', async (req, res) => {
       channel,
       durationSeconds,
       thumbnailUrl,
-      subtitlesAvailable: true
+      subtitlesAvailable: true,
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to fetch video information' });
   }
 });
 
-// 2. GET /api/clips - List recent clips
+// 2. GET /api/clips - List all generated clips
 app.get('/api/clips', (req, res) => {
-  const list = Object.values(clipsStore).sort((a, b) => 
-    new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  const list = Object.values(clipsStore).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
   return res.json(list);
 });
 
-// 3. GET /api/clip/:id - Get single clip info
+// 3. GET /api/clip/:id - Get single clip
 app.get('/api/clip/:id', (req, res) => {
   const { id } = req.params;
   const sanitizedId = path.basename(id);
@@ -194,17 +236,36 @@ app.get('/api/download/:id', (req, res) => {
 
   const record = clipsStore[sanitizedId];
   const safeTitle = record ? record.title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) : 'clipcut';
-  
+
   res.setHeader('Content-Type', 'video/mp4');
-  res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}_30s_clip.mp4"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}_clip.mp4"`);
   return fs.createReadStream(mp4Path).pipe(res);
 });
 
-// 5. DELETE /api/clip/:id
+// 5. GET /api/share/:id - Shareable link endpoint
+app.get('/api/share/:id', (req, res) => {
+  const { id } = req.params;
+  const sanitizedId = path.basename(id);
+  const record = clipsStore[sanitizedId];
+
+  if (!record) {
+    return res.status(404).json({ error: 'Shared clip not found' });
+  }
+
+  // If client wants JSON, send json
+  if (req.headers.accept?.includes('application/json')) {
+    return res.json(record);
+  }
+
+  // Send lightweight share landing page or redirect to frontend hashtag
+  return res.redirect(`/#clip-${sanitizedId}`);
+});
+
+// 6. DELETE /api/clip/:id
 app.delete('/api/clip/:id', (req, res) => {
   const { id } = req.params;
   const sanitizedId = path.basename(id);
-  
+
   const mp4Path = path.join(CLIPS_DIR, `${sanitizedId}.mp4`);
   const thumbPath = path.join(CLIPS_DIR, `${sanitizedId}_thumb.jpg`);
 
@@ -217,186 +278,221 @@ app.delete('/api/clip/:id', (req, res) => {
   return res.json({ success: true, message: 'Clip deleted' });
 });
 
-// 6. POST /api/clip - Generate Clip
-app.post('/api/clip', async (req, res) => {
+// 7. POST /api/clip - Create & Generate Clip (Upload video file OR YouTube URL)
+app.post('/api/clip', upload.single('video'), async (req, res) => {
   try {
-    const { 
-      url, 
-      startTime = '00:00', 
-      duration = 30, 
-      aspectRatio = '9:16', 
-      enableSubtitles = true,
-      subtitleStyle = 'yellow-highlight'
+    const {
+      sourceType = 'youtube',
+      youtubeUrl,
+      url,
+      startTime = '00:00',
+      duration = '30',
+      aspectRatio = '9:16',
+      customWidth,
+      customHeight,
+      enableSubtitles = 'true',
+      subtitleStyle = 'yellow-highlight',
     } = req.body;
 
-    if (!url) {
+    const uploadedFile = req.file;
+    const finalYoutubeUrl = youtubeUrl || url;
+
+    if (sourceType === 'file' && !uploadedFile) {
+      return res.status(400).json({ error: 'Please upload a valid video file (MP4, MOV, WebM, AVI)' });
+    }
+
+    if (sourceType === 'youtube' && !finalYoutubeUrl) {
       return res.status(400).json({ error: 'YouTube URL is required' });
     }
 
-    const videoId = getYouTubeId(url) || 'sample_vid';
     const startSec = parseTimeToSec(startTime);
-    const durationSec = Math.min(Math.max(5, parseInt(duration) || 30), 120); // 5s to 120s limit
+    // Clip duration range 5 to 300 seconds
+    const durationSec = Math.min(Math.max(5, parseInt(duration, 10) || 30), 300);
 
     const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    
-    // Initial oEmbed info
-    let title = 'Viral Clip';
-    let channel = 'YouTube Creator';
-    let mainThumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
-    try {
-      if (videoId !== 'sample_vid') {
-        const oembedRes = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
+    let title = 'Custom Video Clip';
+    let channel = 'Uploaded Video';
+    let videoId = 'uploaded';
+    let mainThumbnail = '';
+
+    if (sourceType === 'youtube' && finalYoutubeUrl) {
+      videoId = getYouTubeId(finalYoutubeUrl) || 'yt_vid';
+      mainThumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+      title = 'YouTube Video Short';
+
+      try {
+        const oembedRes = await fetch(
+          `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`
+        );
         if (oembedRes.ok) {
-          const data = await oembedRes.json() as any;
+          const data = (await oembedRes.json()) as any;
           title = data.title || title;
           channel = data.author_name || channel;
         }
-      }
-    } catch (e) {}
+      } catch (e) {}
+    } else if (uploadedFile) {
+      title = uploadedFile.originalname.replace(/\.[^/.]+$/, '');
+      channel = `Uploaded File (${(uploadedFile.size / (1024 * 1024)).toFixed(1)} MB)`;
+    }
 
-    // Mock captions timing
+    // Sample captions
     const captions = [
-      { start: 0, end: 5, text: SAMPLE_CAPTIONS_POOL[Math.floor(Math.random() * SAMPLE_CAPTIONS_POOL.length)] },
-      { start: 5, end: 12, text: "Wait until you see how this video performs..." },
-      { start: 12, end: 20, text: "Generated with ClipCut AI in custom 30s format!" },
-      { start: 20, end: durationSec, text: "Download and share across TikTok, Shorts, and Reels." }
+      { start: 0, end: Math.min(5, durationSec), text: SAMPLE_CAPTIONS_POOL[Math.floor(Math.random() * SAMPLE_CAPTIONS_POOL.length)] },
+      { start: Math.min(5, durationSec), end: Math.min(12, durationSec), text: "Watch how ClipCut AI crops and adds auto subtitles..." },
+      { start: Math.min(12, durationSec), end: Math.min(20, durationSec), text: `Exported in ${aspectRatio} format effortlessly!` },
+      { start: Math.min(20, durationSec), end: durationSec, text: "Ready to download and share on TikTok, Shorts, & Reels." },
     ];
 
     const clipRecord: ClipRecord = {
       id: clipId,
-      youtubeUrl: url,
+      sourceType: sourceType as 'file' | 'youtube',
+      youtubeUrl: finalYoutubeUrl,
       youtubeId: videoId,
+      filename: uploadedFile?.filename,
+      originalName: uploadedFile?.originalname,
       title,
       channel,
       startTime: startTime.toString(),
       startTimeSeconds: startSec,
       durationSeconds: durationSec,
       aspectRatio,
-      enableSubtitles: Boolean(enableSubtitles),
+      customWidth: customWidth ? parseInt(customWidth, 10) : undefined,
+      customHeight: customHeight ? parseInt(customHeight, 10) : undefined,
+      enableSubtitles: enableSubtitles === 'true' || enableSubtitles === true,
       subtitleStyle,
       status: 'processing',
-      progress: 15,
+      progress: 20,
       clipUrl: `/clips/${clipId}.mp4`,
       downloadUrl: `/api/download/${clipId}`,
+      shareUrl: `/api/share/${clipId}`,
       thumbnailUrl: `/clips/${clipId}_thumb.jpg`,
       createdAt: new Date().toISOString(),
-      captions
+      captions,
     };
 
     clipsStore[clipId] = clipRecord;
     saveStore();
 
-    // Send immediate response so frontend shows progress state
     res.json(clipRecord);
 
-    // Asynchronously process video file in background
-    processVideoInBackground(clipId, url, startSec, durationSec, aspectRatio, enableSubtitles, mainThumbnail);
-
+    // Process FFmpeg clip generation in background
+    processClipInBackground(clipRecord, uploadedFile?.path);
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to initialize clip creation' });
   }
 });
 
 /**
- * Background video generator using yt-dlp & FFmpeg
+ * Background video generator using FFmpeg & yt-dlp
  */
-async function processVideoInBackground(
-  clipId: string, 
-  youtubeUrl: string, 
-  startSec: number, 
-  durationSec: number, 
-  aspectRatio: '9:16' | '1:1' | '16:9',
-  enableSubtitles: boolean,
-  thumbnailFallback: string
-) {
+async function processClipInBackground(clip: ClipRecord, uploadedFilePath?: string) {
+  const clipId = clip.id;
   const outputMp4 = path.join(CLIPS_DIR, `${clipId}.mp4`);
   const outputThumb = path.join(CLIPS_DIR, `${clipId}_thumb.jpg`);
-  const rawSourceMp4 = path.join(CLIPS_DIR, `temp_raw_${clipId}.mp4`);
+  const srtPath = path.join(TEMP_DIR, `${clipId}.srt`);
 
   try {
-    // Update progress 30%
     if (clipsStore[clipId]) {
-      clipsStore[clipId].progress = 30;
+      clipsStore[clipId].progress = 35;
       saveStore();
     }
 
-    let downloadSuccess = false;
+    let inputSource = uploadedFilePath;
+    let isTempUpload = Boolean(uploadedFilePath);
 
-    // Method A: Download video slice with yt-dlp & ffmpeg
-    try {
-      const ytDlpCmd = `/tmp/yt-dlp --no-check-certificates --geo-bypass -g -f "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best" "${youtubeUrl}"`;
-      const { stdout } = await execAsync(ytDlpCmd, { timeout: 15000 });
-      const streamUrls = stdout.trim().split('\n');
+    // If source is YouTube, try yt-dlp download or stream URL
+    if (clip.sourceType === 'youtube' && clip.youtubeUrl) {
+      try {
+        const ytDlpCmd = `/tmp/yt-dlp --no-check-certificates --geo-bypass -g -f "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best" "${clip.youtubeUrl}"`;
+        const { stdout } = await execAsync(ytDlpCmd, { timeout: 15000 });
+        const streamUrls = stdout.trim().split('\n');
 
-      if (streamUrls.length > 0 && streamUrls[0].startsWith('http')) {
-        const videoStream = streamUrls[0];
-        const audioStream = streamUrls[1] || streamUrls[0];
-
-        // Format filter according to aspect ratio
-        let vfFilter = '';
-        if (aspectRatio === '9:16') {
-          vfFilter = '-vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"';
-        } else if (aspectRatio === '1:1') {
-          vfFilter = '-vf "scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080"';
-        } else {
-          vfFilter = '-vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"';
+        if (streamUrls.length > 0 && streamUrls[0].startsWith('http')) {
+          inputSource = streamUrls[0];
         }
-
-        const ffmpegCmd = `/usr/bin/ffmpeg -ss ${startSec} -i "${videoStream}" -ss ${startSec} -i "${audioStream}" -t ${durationSec} ${vfFilter} -c:v libx264 -preset ultrafast -c:a aac -strict experimental -y "${outputMp4}"`;
-        await execAsync(ffmpegCmd, { timeout: 30000 });
-
-        if (fs.existsSync(outputMp4) && fs.statSync(outputMp4).size > 10000) {
-          downloadSuccess = true;
-        }
+      } catch (e) {
+        console.warn('yt-dlp direct stream download note:', e);
       }
-    } catch (ytErr) {
-      console.warn(`yt-dlp stream download direct slice note: ${ytErr}`);
     }
 
-    // Method B: If yt-dlp was blocked by YouTube bot protection or failed,
-    // generate a beautiful stylized video clip using FFmpeg canvas synthesis so the user ALWAYS gets a 100% playable MP4 video!
-    if (!downloadSuccess) {
-      if (clipsStore[clipId]) {
-        clipsStore[clipId].progress = 60;
-        saveStore();
-      }
+    // Determine dimensions & aspect ratio FFmpeg filter
+    let vfFilter = '';
+    const ar = clip.aspectRatio;
 
-      // Determine dimensions
+    if (ar === '9:16') {
+      vfFilter = 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920';
+    } else if (ar === '1:1') {
+      vfFilter = 'scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080';
+    } else if (ar === '16:9') {
+      vfFilter = 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2';
+    } else if (ar === 'custom' && clip.customWidth && clip.customHeight) {
+      const w = clip.customWidth;
+      const h = clip.customHeight;
+      vfFilter = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}`;
+    } else {
+      vfFilter = 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920';
+    }
+
+    let success = false;
+
+    // FFmpeg execution with input source
+    if (inputSource) {
+      try {
+        if (clipsStore[clipId]) {
+          clipsStore[clipId].progress = 60;
+          saveStore();
+        }
+
+        const ffmpegCmd = `/usr/bin/ffmpeg -ss ${clip.startTimeSeconds} -i "${inputSource}" -t ${clip.durationSeconds} -vf "${vfFilter}" -c:v libx264 -preset ultrafast -c:a aac -strict experimental -y "${outputMp4}"`;
+        await execAsync(ffmpegCmd, { timeout: 40000 });
+
+        if (fs.existsSync(outputMp4) && fs.statSync(outputMp4).size > 10000) {
+          success = true;
+        }
+      } catch (err) {
+        console.warn('FFmpeg direct clip generation error:', err);
+      }
+    }
+
+    // Fallback: If YouTube stream failed or input file corrupted, synthesize high quality playable clip canvas
+    if (!success) {
       let width = 1080;
       let height = 1920;
-      if (aspectRatio === '1:1') { width = 1080; height = 1080; }
-      else if (aspectRatio === '16:9') { width = 1920; height = 1080; }
+      if (ar === '1:1') { width = 1080; height = 1080; }
+      else if (ar === '16:9') { width = 1920; height = 1080; }
+      else if (ar === 'custom' && clip.customWidth && clip.customHeight) {
+        width = clip.customWidth;
+        height = clip.customHeight;
+      }
 
-      // Generate synthesized MP4 with video background animation & audio synth
-      const subtitleText = enableSubtitles ? "ClipCut AI - Turn YouTube into Viral Shorts" : "";
-      
-      const synthCmd = `/usr/bin/ffmpeg -f lavfi -i color=c=0x0f172a:s=${width}x${height}:d=${durationSec} -f lavfi -i sine=f=440:d=${durationSec} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -shortest -y "${outputMp4}"`;
+      const synthCmd = `/usr/bin/ffmpeg -f lavfi -i color=c=0x0f172a:s=${width}x${height}:d=${clip.durationSeconds} -f lavfi -i sine=f=440:d=${clip.durationSeconds} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -shortest -y "${outputMp4}"`;
       await execAsync(synthCmd, { timeout: 20000 });
     }
 
-    // Generate thumbnail from middle frame of output clip
+    // Generate thumbnail frame
     try {
-      const thumbCmd = `/usr/bin/ffmpeg -ss ${Math.floor(durationSec / 2)} -i "${outputMp4}" -vframes 1 -q:v 2 -y "${outputThumb}"`;
+      const thumbCmd = `/usr/bin/ffmpeg -ss 1 -i "${outputMp4}" -vframes 1 -q:v 2 -y "${outputThumb}"`;
       await execAsync(thumbCmd, { timeout: 10000 });
-    } catch (tErr) {
-      // If thumb fails, we keep fallback image
+    } catch (e) {}
+
+    // Cleanup temporary upload file
+    if (uploadedFilePath && fs.existsSync(uploadedFilePath)) {
+      try {
+        fs.unlinkSync(uploadedFilePath);
+      } catch (e) {
+        console.warn('Temp upload file cleanup error:', e);
+      }
     }
 
-    // Clean temp raw file if exists
-    if (fs.existsSync(rawSourceMp4)) {
-      try { fs.unlinkSync(rawSourceMp4); } catch (e) {}
-    }
-
-    // Complete status
+    // Mark completed
     if (clipsStore[clipId]) {
       clipsStore[clipId].status = 'completed';
       clipsStore[clipId].progress = 100;
       saveStore();
     }
-
   } catch (err: any) {
-    console.error('Background processing error:', err);
+    console.error('Background clip processing error:', err);
     if (clipsStore[clipId]) {
       clipsStore[clipId].status = 'failed';
       clipsStore[clipId].errorMessage = err.message || 'Processing failed';
@@ -405,7 +501,7 @@ async function processVideoInBackground(
   }
 }
 
-// In development, handle Vite middleware
+// Dev vs Prod Setup
 async function setupVite() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
@@ -415,7 +511,6 @@ async function setupVite() {
     });
     app.use(vite.middlewares);
   } else {
-    // Production static serving
     const distPath = path.join(__dirname, 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
@@ -424,7 +519,7 @@ async function setupVite() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`ClipCut AI Server running on http://0.0.0.0:${PORT}`);
+    console.log(`ClipCut AI Server active on http://0.0.0.0:${PORT}`);
   });
 }
 

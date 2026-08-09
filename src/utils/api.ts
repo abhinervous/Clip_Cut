@@ -16,17 +16,32 @@ export async function fetchVideoInfo(url: string): Promise<VideoMetadata> {
 }
 
 export async function createClip(request: ClipRequest): Promise<ClipItem> {
+  const formData = new FormData();
+
+  formData.append('sourceType', request.sourceType);
+  formData.append('startTime', request.startTime);
+  formData.append('duration', request.durationSeconds.toString());
+  formData.append('aspectRatio', request.aspectRatio);
+  formData.append('enableSubtitles', request.enableSubtitles.toString());
+  if (request.subtitleStyle) {
+    formData.append('subtitleStyle', request.subtitleStyle);
+  }
+  if (request.customWidth) {
+    formData.append('customWidth', request.customWidth.toString());
+  }
+  if (request.customHeight) {
+    formData.append('customHeight', request.customHeight.toString());
+  }
+
+  if (request.sourceType === 'file' && request.videoFile) {
+    formData.append('video', request.videoFile);
+  } else if (request.youtubeUrl) {
+    formData.append('youtubeUrl', request.youtubeUrl);
+  }
+
   const res = await fetch('/api/clip', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url: request.url,
-      startTime: request.startTime,
-      duration: request.durationSeconds,
-      aspectRatio: request.aspectRatio,
-      enableSubtitles: request.enableSubtitles,
-      subtitleStyle: request.subtitleStyle,
-    }),
+    body: formData,
   });
 
   if (!res.ok) {

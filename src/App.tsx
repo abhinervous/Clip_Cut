@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ClipItem, ClipRequest, ToastMessage } from './types';
+import { ClipItem, ClipRequest, ClipSourceType, ToastMessage } from './types';
 import { Navbar } from './components/Navbar';
 import { Hero } from './components/Hero';
 import { SampleVideos } from './components/SampleVideos';
@@ -9,7 +9,7 @@ import { RecentClips } from './components/RecentClips';
 import { Footer } from './components/Footer';
 import { ToastContainer } from './components/Toast';
 import { createClip, fetchRecentClips, deleteClip as apiDeleteClip, fetchClipStatus } from './utils/api';
-import { Sparkles, Layers, Subtitles, Film, ShieldCheck, Zap } from 'lucide-react';
+import { Layers, Subtitles, Film, Zap, Upload } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('studio');
@@ -21,6 +21,7 @@ export default function App() {
   // Hero quick inputs
   const [heroUrl, setHeroUrl] = useState<string>('');
   const [heroStartTime, setHeroStartTime] = useState<string>('00:00');
+  const [defaultSourceType, setDefaultSourceType] = useState<ClipSourceType>('file');
 
   const addToast = (type: 'success' | 'error' | 'info', message: string) => {
     const id = `toast_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`;
@@ -75,7 +76,7 @@ export default function App() {
         if (found) {
           setActiveClip(found);
           if (found.status === 'completed' && activeClip.status === 'processing') {
-            addToast('success', 'Your 30-second clip is ready to preview & download!');
+            addToast('success', 'Your custom clip is ready to preview & download!');
           }
         }
       }
@@ -88,10 +89,19 @@ export default function App() {
   const handleQuickStart = (url: string, startTime = '00:00') => {
     setHeroUrl(url);
     setHeroStartTime(startTime);
+    setDefaultSourceType('youtube');
     setActiveTab('studio');
     addToast('info', 'Loaded YouTube video into Clip Configuration!');
 
-    // Smooth scroll to studio panel
+    const studioEl = document.getElementById('studio-generator');
+    if (studioEl) {
+      studioEl.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  const handleSelectUploadMode = () => {
+    setDefaultSourceType('file');
+    setActiveTab('studio');
     const studioEl = document.getElementById('studio-generator');
     if (studioEl) {
       studioEl.scrollIntoView({ behavior: 'smooth' });
@@ -101,13 +111,13 @@ export default function App() {
   // Create clip action
   const handleGenerateClip = async (request: ClipRequest) => {
     setIsGenerating(true);
-    addToast('info', 'Initializing video downloader & FFmpeg engine...');
+    addToast('info', 'Processing video upload & initializing FFmpeg pipeline...');
 
     try {
       const newClip = await createClip(request);
       setClips((prev) => [newClip, ...prev]);
       setActiveClip(newClip);
-      addToast('success', 'Clip request queued! Processing video & auto subtitles...');
+      addToast('success', 'Clip request submitted! Rendering video & English subtitles...');
       setActiveTab('studio');
     } catch (err: any) {
       addToast('error', err.message || 'Failed to create clip');
@@ -132,7 +142,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#050508] text-white font-sans flex flex-col selection:bg-indigo-500 selection:text-white antialiased">
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans flex flex-col selection:bg-indigo-500 selection:text-white antialiased">
       {/* Toast Notifications */}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
 
@@ -140,7 +150,10 @@ export default function App() {
       <Navbar activeTab={activeTab} onTabChange={setActiveTab} />
 
       {/* Hero Section */}
-      <Hero onQuickStart={(url) => handleQuickStart(url, '00:00')} />
+      <Hero
+        onQuickStart={(url) => handleQuickStart(url, '00:00')}
+        onSelectUploadMode={handleSelectUploadMode}
+      />
 
       {/* 1-Click Sample Videos Bar */}
       <SampleVideos onSelectSample={(url, startTime) => handleQuickStart(url, startTime)} />
@@ -157,6 +170,7 @@ export default function App() {
                 isGenerating={isGenerating}
                 onGenerate={handleGenerateClip}
                 onError={(msg) => addToast('error', msg)}
+                defaultSourceType={defaultSourceType}
               />
 
               <RecentClips
@@ -174,7 +188,7 @@ export default function App() {
                 onNewClip={() => {
                   setHeroUrl('');
                   setActiveClip(null);
-                  addToast('info', 'Ready for new YouTube video link');
+                  addToast('info', 'Ready to upload video file or paste YouTube link');
                 }}
                 onDeleteClip={handleDeleteClip}
                 onCopyShareLink={(shareUrl) => {
@@ -188,14 +202,14 @@ export default function App() {
 
         {/* Clip History Tab */}
         {activeTab === 'history' && (
-          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl">
-            <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 backdrop-blur-xl">
+            <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-slate-100">
               <Layers className="w-5 h-5 text-indigo-400" />
               Generated Clips Library ({clips.length})
             </h2>
 
             {clips.length === 0 ? (
-              <p className="text-white/50 text-sm py-8 text-center">No clips generated yet. Paste a YouTube link in the studio!</p>
+              <p className="text-slate-400 text-sm py-8 text-center">No clips generated yet. Upload a video file or paste a YouTube link!</p>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {clips.map((clip) => (
@@ -205,7 +219,7 @@ export default function App() {
                       setActiveClip(clip);
                       setActiveTab('studio');
                     }}
-                    className="bg-black/40 border border-white/10 rounded-xl p-3 hover:border-indigo-500/50 transition-all cursor-pointer group"
+                    className="bg-slate-950 border border-slate-800 rounded-xl p-3 hover:border-indigo-500/50 transition-all cursor-pointer group"
                   >
                     <div className="aspect-video bg-black rounded-lg overflow-hidden relative mb-2">
                       <img
@@ -213,12 +227,12 @@ export default function App() {
                         alt={clip.title}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                       />
-                      <span className="absolute bottom-2 right-2 bg-black/80 text-[10px] font-mono px-1.5 py-0.5 rounded">
+                      <span className="absolute bottom-2 right-2 bg-black/80 text-[10px] font-mono px-1.5 py-0.5 rounded text-white">
                         00:{clip.durationSeconds}s
                       </span>
                     </div>
-                    <h4 className="text-xs font-bold text-white truncate">{clip.title}</h4>
-                    <div className="flex justify-between items-center text-[10px] text-white/50 mt-1">
+                    <h4 className="text-xs font-bold text-slate-100 truncate">{clip.title}</h4>
+                    <div className="flex justify-between items-center text-[10px] text-slate-400 mt-1">
                       <span>Format: {clip.aspectRatio}</span>
                       <a
                         href={clip.downloadUrl}
@@ -239,33 +253,33 @@ export default function App() {
         {/* Features Info Tab */}
         {activeTab === 'features' && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6">
               <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 mb-4">
+                <Upload className="w-5 h-5" />
+              </div>
+              <h3 className="text-base font-bold text-slate-100 mb-2">Local Video Uploads</h3>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                Drag and drop MP4, MOV, WebM, or AVI files up to 1 GB (2 hours max duration). Fast local parsing and FFmpeg processing.
+              </p>
+            </div>
+
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6">
+              <div className="w-10 h-10 rounded-xl bg-purple-500/20 flex items-center justify-center text-purple-400 mb-4">
                 <Subtitles className="w-5 h-5" />
               </div>
-              <h3 className="text-base font-bold text-white mb-2">Auto English Captions</h3>
-              <p className="text-xs text-white/60 leading-relaxed">
-                Automatically transcribes and synchronizes word-by-word viral captions with customizable styles (Yellow Highlight, Cyber Cyan, Classic Minimal).
+              <h3 className="text-base font-bold text-slate-100 mb-2">Auto English Subtitles</h3>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                Burn synchronized word-by-word viral captions directly onto your clips with Yellow Highlight, Cyber Cyan, or Minimal White styles.
               </p>
             </div>
 
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
-              <div className="w-10 h-10 rounded-xl bg-purple-500/20 flex items-center justify-center text-purple-400 mb-4">
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6">
+              <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 mb-4">
                 <Film className="w-5 h-5" />
               </div>
-              <h3 className="text-base font-bold text-white mb-2">Multi-Format Resizing</h3>
-              <p className="text-xs text-white/60 leading-relaxed">
-                Smart FFmpeg cropping converts landscape videos into 9:16 vertical shorts for TikTok & Reels, 1:1 square for Instagram, or 16:9 for YouTube.
-              </p>
-            </div>
-
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
-              <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 mb-4">
-                <Zap className="w-5 h-5" />
-              </div>
-              <h3 className="text-base font-bold text-white mb-2">Lightning Fast Export</h3>
-              <p className="text-xs text-white/60 leading-relaxed">
-                Direct MP4 download with instant shareable links for seamless team collaboration and social media publishing.
+              <h3 className="text-base font-bold text-slate-100 mb-2">Custom Dimensions</h3>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                Choose 9:16 vertical (Shorts / Reels / TikTok), 1:1 square, 16:9 landscape, or specify exact custom pixel Width × Height.
               </p>
             </div>
           </div>

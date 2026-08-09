@@ -1,4 +1,6 @@
-export type AspectRatio = '9:16' | '1:1' | '16:9';
+export type AspectRatio = '9:16' | '1:1' | '16:9' | 'custom';
+export type SubtitleStyle = 'yellow-highlight' | 'white-minimal' | 'cyber-cyan';
+export type ClipSourceType = 'file' | 'youtube';
 
 export interface VideoMetadata {
   id: string;
@@ -11,30 +13,39 @@ export interface VideoMetadata {
 }
 
 export interface ClipRequest {
-  url: string;
-  startTime: string; // HH:MM:SS or MM:SS or seconds string
-  durationSeconds: number; // default 30
+  sourceType: ClipSourceType;
+  videoFile?: File;
+  youtubeUrl?: string;
+  startTime: string; // HH:MM:SS or MM:SS or seconds
+  durationSeconds: number; // 5 to 300 seconds
   aspectRatio: AspectRatio;
+  customWidth?: number;
+  customHeight?: number;
   enableSubtitles: boolean;
-  subtitleStyle?: 'yellow-highlight' | 'cyber-cyan' | 'classic-minimal';
+  subtitleStyle?: SubtitleStyle;
 }
 
 export interface ClipItem {
   id: string;
-  youtubeUrl: string;
-  youtubeId: string;
+  sourceType: ClipSourceType;
+  youtubeUrl?: string;
+  youtubeId?: string;
+  filename?: string;
   title: string;
   channel: string;
   startTime: string;
   startTimeSeconds: number;
   durationSeconds: number;
   aspectRatio: AspectRatio;
+  customWidth?: number;
+  customHeight?: number;
   enableSubtitles: boolean;
-  subtitleStyle?: string;
+  subtitleStyle?: SubtitleStyle;
   status: 'processing' | 'completed' | 'failed';
   progress: number; // 0 to 100
   clipUrl: string;
   downloadUrl: string;
+  shareUrl: string;
   thumbnailUrl: string;
   createdAt: string;
   errorMessage?: string;

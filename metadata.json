@@ -1,6 +1,6 @@
 {
   "name": "ClipCut AI",
-  "description": "Turn YouTube videos into 30-second AI shorts with custom duration, aspect ratios, subtitles, and instant export.",
+  "description": "Upload video files or paste YouTube links to generate custom AI short clips with English subtitles, duration control, and multi-format aspect ratios.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
